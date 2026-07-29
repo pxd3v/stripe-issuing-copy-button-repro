@@ -156,13 +156,12 @@
         log("hit test at centre     :", hit ? `<${hit.tagName.toLowerCase()}>` : "null");
         log("  -> proves clicks land on the Stripe frame, not on our markup");
         log("");
-        log("CONFIRM IT IN CHROME'S OWN UI — this is the definitive evidence:");
-        log("  DevTools > Application > Frames > the js.stripe.com copy-button frame");
-        log("  > Permissions Policy. clipboard-write appears under Disabled Features.");
+        log("NOTE: the missing clipboard-write above is a RED HERRING. Chrome does");
+        log("disable it for this frame, but step 2 with a real card copies fine, so");
+        log("Stripe is not using the permission-gated Clipboard API. Not a Stripe bug.");
         log("");
-        log("WARNING: with no card data mounted, Stripe has nothing to write, so the");
-        log("click event fires even in Chrome. That is NOT the feature working.");
-        log("Only step 2, with a real card, exercises the clipboard write.");
+        log("WARNING: with no card data mounted, Stripe emits click without touching");
+        log("the clipboard at all. A fired click here proves nothing — only step 2 does.");
       }
 
       // Focus evidence: the frame keeps focus after the click, so nothing is stealing it.
