@@ -53,7 +53,34 @@
         background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23444' stroke-width='2'><rect x='9' y='9' width='11' height='11' rx='2'/><path d='M5 15V5a2 2 0 0 1 2-2h10'/></svg>");
       }
 
-      #result { font-weight: 600; }
+      /* Mode 3: the integration's structure and iframe overrides, reproduced exactly —
+         sibling icon plus an absolutely positioned mount target, and forced iframe metrics. */
+      #app-box {
+        position: relative;
+        width: 20px;
+        height: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #app-icon { pointer-events: none; font-size: 15px; color: #444; }
+      #app-copy {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        cursor: pointer;
+        z-index: 1;
+      }
+      #app-copy iframe {
+        border: 0;
+        cursor: pointer;
+        height: 20px !important;
+        position: static !important;
+        width: 20px !important;
+      }
+
+      #result, #app-result { font-weight: 600; }
       .fired { color: #0a7d32; }
       .idle { color: #999; }
       textarea { width: 100%; box-sizing: border-box; height: 60px; font: inherit; }
@@ -84,6 +111,21 @@
     <p>Click the copy affordance above, then paste here to see what actually landed on the clipboard:</p>
     <textarea placeholder="Paste here…"></textarea>
 
+    <h2>3. Mount with the integration's CSS overrides</h2>
+    <p>
+      Same Stripe code as step 1, but wrapped in the structure and iframe overrides a real
+      integration was using: a sibling icon with an absolutely positioned mount target, and
+      <code>height</code>/<code>width</code>/<code>position</code> forced on the iframe with
+      <code>!important</code>. If the click event stops firing here, the integration's CSS is the
+      cause and Stripe is fine.
+    </p>
+    <button id="app-css">Mount with integration CSS</button>
+
+    <div class="row">
+      <div id="app-box"><span id="app-icon">⧉</span><div id="app-copy"></div></div>
+      <span id="app-result" class="idle">click event: not fired</span>
+    </div>
+
     <h2>Diagnostics</h2>
     <pre id="log">Run one of the steps above.</pre>
 
@@ -97,8 +139,8 @@
         logEl.textContent = lines.join("\n");
       }
 
-      function inspectCopyFrame() {
-        const target = document.getElementById("card-number-copy");
+      function inspectCopyFrame(targetId = "card-number-copy") {
+        const target = document.getElementById(targetId);
         const frame = target.querySelector("iframe");
 
         if (!frame) return log("FAIL: Stripe did not insert an iframe into the mount target.");
@@ -136,13 +178,33 @@
         return res.json();
       }
 
-      function wireClick(numberCopy) {
+      function wireClick(numberCopy, target = resultEl) {
         numberCopy.on("click", () => {
-          resultEl.textContent = "click event: FIRED";
-          resultEl.className = "fired";
+          target.textContent = "click event: FIRED";
+          target.className = "fired";
           log("numberCopy.on('click') fired");
         });
       }
+
+      document.getElementById("app-css").addEventListener("click", async () => {
+        lines = [];
+        try {
+          const { publishableKey } = await getConfig();
+          if (!publishableKey) return log("STRIPE_PUBLISHABLE_KEY is not set in .env");
+
+          const stripe = Stripe(publishableKey, { betas: ["issuing_elements_2"] });
+          const elements = stripe.elements();
+          const numberCopy = elements.create("issuingCardCopyButton", { toCopy: "number" });
+          wireClick(numberCopy, document.getElementById("app-result"));
+          numberCopy.mount("#app-copy");
+
+          log("Mounted with the integration's structure and forced iframe metrics.");
+          log("Now click the icon next to 'click event' in section 3.");
+          setTimeout(() => inspectCopyFrame("app-copy"), 1200);
+        } catch (error) {
+          log("ERROR:", error.message);
+        }
+      });
 
       document.getElementById("mount-only").addEventListener("click", async () => {
         lines = [];
@@ -156,7 +218,8 @@
           wireClick(numberCopy);
           numberCopy.mount("#card-number-copy");
 
-          log("Mounted issuingCardCopyButton on its own (no card data).");
+          log("Mounted issuingCardCopyButton on its own (no card data needed).");
+          log("Reading the iframe Stripe.js created…");
           setTimeout(inspectCopyFrame, 1200);
         } catch (error) {
           log("ERROR:", error.message);
@@ -175,8 +238,25 @@
           if (config.stripeAccount) options.stripeAccount = config.stripeAccount;
           const stripe = Stripe(config.publishableKey, options);
 
-          const { nonce } = await stripe.createEphemeralKeyNonce({ issuingCard: config.cardId });
-          log("nonce created");
+          log("cardId          :", config.cardId);
+          log("stripeAccount   :", config.stripeAccount || "(none)");
+
+          // Stripe.js resolves rather than throws on failure here, so check `error` explicitly.
+          const nonceResult = await stripe.createEphemeralKeyNonce({ issuingCard: config.cardId });
+          if (nonceResult.error || !nonceResult.nonce) {
+            log("");
+            log("createEphemeralKeyNonce failed:", nonceResult.error?.message || "no nonce returned");
+            log("");
+            log("Most likely causes, in order:");
+            log("  1. The card lives on a connected account but STRIPE_ACCOUNT is not set in .env.");
+            log("  2. ISSUING_CARD_ID does not match the account the publishable key belongs to.");
+            log("  3. ISSUING_CARD_ID has stray quotes or whitespace in .env.");
+            log("");
+            log("Step 1 above ('Mount copy button only') needs none of this and still shows the bug.");
+            return;
+          }
+          const nonce = nonceResult.nonce;
+          log("nonce created   :", `${nonce.slice(0, 12)}…`);
 
           const res = await fetch("/ephemeral-key", {
             method: "POST",

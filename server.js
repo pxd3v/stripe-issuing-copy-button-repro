@@ -11,12 +11,20 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
+// Strips the quotes and stray whitespace people leave in .env files.
+const env = (name) => {
+  const raw = process.env[name];
+  if (!raw) return null;
+  const value = raw.trim().replace(/^["']|["']$/g, "");
+  return value || null;
+};
+
 app.get("/config", (_req, res) => {
   res.json({
-    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || null,
-    cardId: process.env.ISSUING_CARD_ID || null,
-    stripeAccount: process.env.STRIPE_ACCOUNT || null,
-    fullFlowConfigured: Boolean(process.env.STRIPE_SECRET_KEY && process.env.ISSUING_CARD_ID),
+    publishableKey: env("STRIPE_PUBLISHABLE_KEY"),
+    cardId: env("ISSUING_CARD_ID"),
+    stripeAccount: env("STRIPE_ACCOUNT"),
+    fullFlowConfigured: Boolean(env("STRIPE_SECRET_KEY") && env("ISSUING_CARD_ID")),
   });
 });
 
@@ -25,17 +33,19 @@ app.get("/config", (_req, res) => {
 app.post("/ephemeral-key", async (req, res) => {
   const { cardId, nonce } = req.body || {};
 
-  if (!process.env.STRIPE_SECRET_KEY) {
+  if (!env("STRIPE_SECRET_KEY")) {
     return res.status(400).json({ error: "STRIPE_SECRET_KEY is not set" });
   }
   if (!cardId || !nonce) {
-    return res.status(400).json({ error: "cardId and nonce are required" });
+    return res.status(400).json({
+      error: `cardId and nonce are required (received cardId=${cardId || "missing"}, nonce=${nonce || "missing"})`,
+    });
   }
 
   try {
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+    const stripe = new Stripe(env("STRIPE_SECRET_KEY"));
     const requestOptions = { apiVersion: API_VERSION };
-    if (process.env.STRIPE_ACCOUNT) requestOptions.stripeAccount = process.env.STRIPE_ACCOUNT;
+    if (env("STRIPE_ACCOUNT")) requestOptions.stripeAccount = env("STRIPE_ACCOUNT");
 
     const key = await stripe.ephemeralKeys.create({ issuing_card: cardId, nonce }, requestOptions);
     res.json({ ephemeralKeySecret: key.secret });
@@ -47,7 +57,9 @@ app.post("/ephemeral-key", async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Repro running at http://localhost:${PORT}`);
-  if (!process.env.STRIPE_PUBLISHABLE_KEY) {
-    console.warn("STRIPE_PUBLISHABLE_KEY is not set — copy the .env.example to .env first.");
+  if (!env("STRIPE_PUBLISHABLE_KEY")) {
+    console.warn("STRIPE_PUBLISHABLE_KEY is not set — copy .env.example to .env first.");
   }
+  // dotenv reads .env once at boot, so an edited .env needs a restart to take effect.
+  console.log("Edited .env? Restart this process.");
 });
