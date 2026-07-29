@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Stripe Issuing copy button — missing clipboard-write</title>
+    <script src="https://js.stripe.com/v3/"></script>
+    <style>
+      body {
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0 auto;
+        padding: 32px 24px 64px;
+        max-width: 720px;
+        color: #1a1a1a;
+      }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      h2 { font-size: 15px; margin: 32px 0 8px; }
+      .sub { color: #666; margin: 0 0 24px; }
+      button {
+        font: inherit;
+        padding: 8px 14px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        background: #fff;
+        cursor: pointer;
+      }
+      button:hover { background: #f6f6f6; }
+      pre {
+        background: #f6f6f6;
+        border-radius: 6px;
+        padding: 12px;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        font-size: 12px;
+      }
+      .row { display: flex; align-items: center; gap: 12px; margin: 16px 0; }
+      .pan {
+        min-width: 220px;
+        height: 24px;
+        padding: 0 8px;
+        background: #f0f0f0;
+        border-radius: 4px;
+      }
+
+      /* The mount container, styled per Stripe's documented example: sized, position:relative,
+         with the copy affordance as a background image. Stripe's transparent button fills it. */
+      #card-number-copy {
+        height: 24px;
+        width: 24px;
+        position: relative;
+        background-repeat: no-repeat;
+        background-position: center;
+        background-size: contain;
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23444' stroke-width='2'><rect x='9' y='9' width='11' height='11' rx='2'/><path d='M5 15V5a2 2 0 0 1 2-2h10'/></svg>");
+      }
+
+      #result { font-weight: 600; }
+      .fired { color: #0a7d32; }
+      .idle { color: #999; }
+      textarea { width: 100%; box-sizing: border-box; height: 60px; font: inherit; }
+    </style>
+  </head>
+  <body>
+    <h1>Stripe Issuing <code>issuingCardCopyButton</code> — copy silently fails in Chrome</h1>
+    <p class="sub">
+      The element's iframe is created with <code>allow="payment *"</code> and no
+      <code>clipboard-write</code>, so Chrome denies the clipboard write inside it. Works in Firefox
+      and Safari, which permit clipboard access in iframes by default.
+    </p>
+
+    <h2>1. Mount the copy button only</h2>
+    <p>Needs just a test publishable key. Proves the <code>allow</code> attribute is missing the permission.</p>
+    <button id="mount-only">Mount copy button only</button>
+
+    <h2>2. Run the full documented flow</h2>
+    <p>Needs a test secret key and a test Issuing card id. Reproduces the user-visible failure.</p>
+    <button id="full-flow">Run full flow</button>
+
+    <div class="row">
+      <div class="pan" id="card-number"></div>
+      <div id="card-number-copy" title="Copy card number"></div>
+      <span id="result" class="idle">click event: not fired</span>
+    </div>
+
+    <p>Click the copy affordance above, then paste here to see what actually landed on the clipboard:</p>
+    <textarea placeholder="Paste here…"></textarea>
+
+    <h2>Diagnostics</h2>
+    <pre id="log">Run one of the steps above.</pre>
+
+    <script>
+      const logEl = document.getElementById("log");
+      const resultEl = document.getElementById("result");
+      let lines = [];
+
+      function log(...parts) {
+        lines.push(parts.join(" "));
+        logEl.textContent = lines.join("\n");
+      }
+
+      function inspectCopyFrame() {
+        const target = document.getElementById("card-number-copy");
+        const frame = target.querySelector("iframe");
+
+        if (!frame) return log("FAIL: Stripe did not insert an iframe into the mount target.");
+
+        const rect = frame.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+
+        log("");
+        log("iframe allow attribute :", JSON.stringify(frame.getAttribute("allow")));
+        log("  -> expected to contain 'clipboard-write'");
+        log("iframe src             :", frame.getAttribute("src"));
+        log("iframe rect            :", `${rect.width}x${rect.height} at ${Math.round(rect.x)},${Math.round(rect.y)}`);
+        log("hit test at centre     :", hit ? `<${hit.tagName.toLowerCase()}>` : "null");
+        log("  -> proves clicks land on the Stripe frame, not on our markup");
+      }
+
+      // Focus evidence: the frame keeps focus after the click, so nothing is stealing it.
+      document.addEventListener(
+        "pointerdown",
+        () => {
+          setTimeout(() => {
+            const active = document.activeElement;
+            log(
+              "after click            :",
+              `activeElement=<${active ? active.tagName.toLowerCase() : "none"}>`,
+              `documentHasFocus=${document.hasFocus()}`,
+            );
+          }, 50);
+        },
+        true,
+      );
+
+      async function getConfig() {
+        const res = await fetch("/config");
+        return res.json();
+      }
+
+      function wireClick(numberCopy) {
+        numberCopy.on("click", () => {
+          resultEl.textContent = "click event: FIRED";
+          resultEl.className = "fired";
+          log("numberCopy.on('click') fired");
+        });
+      }
+
+      document.getElementById("mount-only").addEventListener("click", async () => {
+        lines = [];
+        try {
+          const { publishableKey } = await getConfig();
+          if (!publishableKey) return log("STRIPE_PUBLISHABLE_KEY is not set in .env");
+
+          const stripe = Stripe(publishableKey, { betas: ["issuing_elements_2"] });
+          const elements = stripe.elements();
+          const numberCopy = elements.create("issuingCardCopyButton", { toCopy: "number" });
+          wireClick(numberCopy);
+          numberCopy.mount("#card-number-copy");
+
+          log("Mounted issuingCardCopyButton on its own (no card data).");
+          setTimeout(inspectCopyFrame, 1200);
+        } catch (error) {
+          log("ERROR:", error.message);
+        }
+      });
+
+      document.getElementById("full-flow").addEventListener("click", async () => {
+        lines = [];
+        try {
+          const config = await getConfig();
+          if (!config.fullFlowConfigured) {
+            return log("Set STRIPE_SECRET_KEY and ISSUING_CARD_ID in .env for the full flow.");
+          }
+
+          const options = { betas: ["issuing_elements_2"] };
+          if (config.stripeAccount) options.stripeAccount = config.stripeAccount;
+          const stripe = Stripe(config.publishableKey, options);
+
+          const { nonce } = await stripe.createEphemeralKeyNonce({ issuingCard: config.cardId });
+          log("nonce created");
+
+          const res = await fetch("/ephemeral-key", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cardId: config.cardId, nonce }),
+          });
+          const { ephemeralKeySecret, error } = await res.json();
+          if (!ephemeralKeySecret) return log("ephemeral key failed:", error);
+          log("ephemeral key minted");
+
+          await stripe.retrieveIssuingCard(config.cardId, { ephemeralKeySecret, nonce });
+          log("card retrieved");
+
+          const elements = stripe.elements();
+          const number = elements.create("issuingCardNumberDisplay", {
+            issuingCard: config.cardId,
+            ephemeralKeySecret,
+            nonce,
+          });
+          const numberCopy = elements.create("issuingCardCopyButton", { toCopy: "number" });
+
+          number.mount("#card-number");
+          wireClick(numberCopy);
+          numberCopy.mount("#card-number-copy");
+          log("elements mounted — now click the copy affordance");
+
+          setTimeout(inspectCopyFrame, 1500);
+        } catch (error) {
+          log("ERROR:", error.message);
+        }
+      });
+    </script>
+  </body>
+</html>
