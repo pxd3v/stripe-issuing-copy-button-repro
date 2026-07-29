@@ -17,20 +17,23 @@ the failing variable can be found by bisection.
 | Clicks reach the frame | `document.elementFromPoint()` at the icon's centre returns the Stripe iframe. |
 | The frame keeps focus | After the click, `document.activeElement` is the iframe and `document.hasFocus()` is `true`. Nothing steals focus. |
 
-## The two candidates, and the test that separates them
+## Eliminated
 
-1. **The integration's CSS.** In the failing app the iframe is forced to `20x20` with
-   `height`/`width`/`position: static` at `!important`, inside an absolutely positioned mount
-   target with a sibling icon. Left alone, Stripe sizes the frame itself (`24 x 16.8` here).
-   → **Step 3** below reproduces those overrides. If `click` stops firing, this is the cause.
+- **The `allow` attribute alone.** Step 1 mounts with `allow="payment *"` and `click` fires.
+- **The integration's CSS and structure.** Step 3 reproduces the forced `20x20` iframe metrics,
+  `position: static !important`, sibling icon and absolutely positioned mount target — measured rect
+  confirms the overrides applied — and `click` still fires.
 
-2. **The clipboard permission after all.** Step 1 mounts the button with *no card data*, so Stripe
-   may skip the clipboard entirely and emit `click` on a nothing-to-copy path. With a real card the
-   write would actually be attempted, and could reject.
-   → **Step 2** below, with a real test card, settles it. If `click` fires there and the paste box
-   receives the number, this candidate is dead.
+## What that leaves
 
-Run step 3 and step 2. Between them they eliminate one candidate.
+**Every harness mode so far mounts the copy button with no card data**, so Stripe has nothing to
+copy and may emit `click` on a trivial path that never touches the clipboard. Nothing measured yet
+exercises the path where a real write is attempted.
+
+**Step 2 is therefore the only remaining discriminator here.** Run it with a real test card:
+if `click` fires and the number lands in the paste box, the clipboard is fine and the cause lives in
+the integration's own runtime — not in Stripe and not in CSS. If `click` does not fire, the
+with-data path is where it breaks.
 
 ## Setup
 
