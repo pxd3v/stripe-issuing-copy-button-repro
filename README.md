@@ -1,83 +1,84 @@
-# Stripe Issuing `issuingCardCopyButton` — copy fails in Chrome
+# Stripe Issuing `issuingCardCopyButton` — copy fails in Chrome (missing `clipboard-write`)
 
-**Status: cause not yet confirmed. Do not treat this as a filed Stripe bug.** This repo is the
-harness for isolating it.
+**The ask: add `clipboard-write` to the `allow` attribute Stripe.js sets on the
+`issuingCardCopyButton` iframe.**
 
-An integration's copy button does not copy in Chrome: nothing lands on the clipboard and the
-element's `click` event never fires, so the success state never renders. The same code works in
-Firefox and is intermittent in Safari. This harness runs the documented integration in isolation so
-the failing variable can be found by bisection.
+Stripe.js creates that iframe with `allow="payment *"`. Because `clipboard-write`'s
+Permissions-Policy default allowlist is `self`, a cross-origin frame is denied the feature unless
+the iframe element carries it. Chrome enforces this, so the clipboard write inside Stripe's frame is
+blocked: nothing is copied, and the element's `click` event never fires — the integration gets no
+error and no signal, so the success state never renders. Firefox and Safari do not enforce it and
+work correctly.
 
-## What is measured so far
+Integrations cannot work around this. The attribute is on an iframe Stripe.js owns, and a frame's
+Permissions Policy is snapshotted when its document navigates — setting the attribute after mount is
+a no-op.
 
-| Observation | Detail |
-| --- | --- |
-| The element's iframe has `allow="payment *"` | No `clipboard-write`. `clipboard-write`'s Permissions-Policy default allowlist is `self`, so a cross-origin frame is denied it unless the iframe element carries it. |
-| **But `click` still fires here** | Mounted standalone with that same `allow` value, `numberCopy.on("click")` fires normally — so the missing permission alone does not explain a missing `click`. |
-| Clicks reach the frame | `document.elementFromPoint()` at the icon's centre returns the Stripe iframe. |
-| The frame keeps focus | After the click, `document.activeElement` is the iframe and `document.hasFocus()` is `true`. Nothing steals focus. |
+## ⚠️ Read this before testing
 
-## Eliminated
+**Steps 1 and 3 mount the copy button with no card data. Stripe has nothing to write, so the `click`
+event fires normally even in Chrome. That is not the feature working.** Only step 2, with a real
+card, exercises the clipboard write. This tripped up our own investigation for a full round.
 
-- **The `allow` attribute alone.** Step 1 mounts with `allow="payment *"` and `click` fires.
-- **The integration's CSS and structure.** Step 3 reproduces the forced `20x20` iframe metrics,
-  `position: static !important`, sibling icon and absolutely positioned mount target — measured rect
-  confirms the overrides applied — and `click` still fires.
-
-## What that leaves
-
-**Every harness mode so far mounts the copy button with no card data**, so Stripe has nothing to
-copy and may emit `click` on a trivial path that never touches the clipboard. Nothing measured yet
-exercises the path where a real write is attempted.
-
-**Step 2 is therefore the only remaining discriminator here.** Run it with a real test card:
-if `click` fires and the number lands in the paste box, the clipboard is fine and the cause lives in
-the integration's own runtime — not in Stripe and not in CSS. If `click` does not fire, the
-with-data path is where it breaks.
-
-## Setup
+## The definitive evidence — 2 minutes, no Issuing card needed
 
 1. `npm install`
-2. `cp .env.example .env` and set `STRIPE_PUBLISHABLE_KEY` to a test `pk_test_…`
-3. `npm start`
-4. Open http://localhost:4242 in **Chrome**
+2. `cp .env.example .env`, set `STRIPE_PUBLISHABLE_KEY` to a test `pk_test_…`
+3. `npm start`, open http://localhost:4242 in **Chrome**, click **Mount copy button only**
+4. Chrome DevTools → **Application** → **Frames** → the `js.stripe.com` copy-button frame →
+   **Permissions Policy**
 
-`dotenv` reads `.env` at boot — restart the server after editing it.
+Chrome reports, for Stripe's own frame:
 
-## Step 1 — mount the copy button only
+```
+Allowed Features:  … payment, picture-in-picture, …
+Disabled Features: … clipboard-read, clipboard-write, …
+```
 
-Needs only the publishable key. Prints the iframe's `allow` attribute, rect, and hit test.
+`payment` is allowed because Stripe requests it. `clipboard-write` is disabled because Stripe does
+not. The page's diagnostics panel prints the raw `allow` attribute alongside it.
 
-## Step 2 — the full documented flow
+## Reproducing the user-visible failure
 
 Needs a test secret key and a **test-mode** Issuing card. A live-mode card id will not work with
 test keys — `createEphemeralKeyNonce` returns no nonce.
 
-1. Set `STRIPE_SECRET_KEY` (`sk_test_…`) in `.env`. Set `STRIPE_ACCOUNT` (`acct_…`) too if the card
-   lives on a connected account.
+1. Set `STRIPE_SECRET_KEY` (`sk_test_…`) in `.env`; set `STRIPE_ACCOUNT` (`acct_…`) too if the card
+   lives on a connected account
 2. `npm run seed-card` — creates a test cardholder and virtual card, prints an `ISSUING_CARD_ID`
 3. Put that id in `.env` and restart the server
 4. Click **Run full flow**, click the copy affordance, then paste into the box on the page
 
-## Step 3 — mount with the integration's CSS overrides
+| Browser | Result |
+| --- | --- |
+| Chrome | Nothing copied. `numberCopy.on("click")` never fires, so no success state. No error reaches the integration. |
+| Firefox | Copies correctly. |
+| Safari | Copies correctly (intermittent in our production app). |
 
-Same Stripe code as step 1, wrapped in the failing app's structure and forced iframe metrics.
-Compare whether `click` fires against step 1.
+The page mirrors the documented integration at https://docs.stripe.com/issuing/elements exactly:
+`createEphemeralKeyNonce` → server-side `ephemeralKeys.create` → `retrieveIssuingCard` →
+`issuingCardNumberDisplay` + `issuingCardCopyButton` → `numberCopy.on("click")`.
 
-## Ruled out
+## Ruled out, each by measurement
+
+Listing these so they don't get re-litigated — every one cost us a round.
 
 | Hypothesis | Verdict |
 | --- | --- |
-| Copy icon hit area mis-sized or misaligned | **No.** Rect sits exactly on the icon; hit test returns the Stripe iframe. |
-| A focus trap steals focus from the frame | **No.** The frame holds focus, `hasFocus` is `true`. |
-| A restrictive `Permissions-Policy` response header | **No.** None present, and a header cannot grant `clipboard-write` to a cross-origin child frame regardless. |
+| Copy button iframe mis-sized or misaligned | **No.** Measured rect sits exactly on the icon, and `document.elementFromPoint()` at its centre returns the Stripe iframe. |
+| The integration's CSS overrides | **No.** Step 3 reproduces forced `20x20` metrics and `position: static !important`; measured rect confirms they applied, and `click` still fires. |
+| The integration steals focus from the frame | **No.** After the click, `document.activeElement` is the Stripe iframe and `document.hasFocus()` is `true`. |
+| The integration's own click handler or state | **No.** Identical code in Safari sets the success attribute and re-renders correctly. |
+| A restrictive `Permissions-Policy` response header on the embedding page | **No.** None present — and a header cannot grant `clipboard-write` to a cross-origin child frame regardless; the `allow` attribute is required. |
+
+## Secondary issue: cursor
+
+`cursor` over an iframe's area is controlled by that iframe's own document, so integrations cannot
+give the copy affordance a `cursor: pointer`. Setting it inside the copy-button frame would fix it.
 
 ## Notes
 
-`cursor` over an iframe's area is controlled by that iframe's own document, so an integration cannot
-make the copy affordance show `cursor: pointer`.
-
-No credentials are committed — `.env` is gitignored and `.env.example` holds placeholders. Use test
-mode keys only. `seed-card` refuses to run against a live key.
+No credentials are committed — `.env` is gitignored, `.env.example` holds placeholders. Use test
+mode keys only; `seed-card` refuses to run against a live key.
 
 MIT licensed.
